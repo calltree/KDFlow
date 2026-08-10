@@ -1,7 +1,10 @@
 import os
 import gc
+import base64
 import functools
+import hashlib
 import logging
+import pickle
 import torch
 
 import torch.distributed as dist
@@ -538,6 +541,19 @@ class FSDP2Strategy(ABC):
 
         model_unwrapped = self._unwrap_model(model)
 
+        if isinstance(model_unwrapped, PeftModel):
+            if weight_source is not None:
+                raise NotImplementedError(
+                    "EMA teacher synchronization is not supported for PEFT models"
+                )
+            self._update_rollout_lora(
+                model_unwrapped,
+                engine=engine,
+                gather_src=gather_src,
+            )
+            torch.cuda.empty_cache()
+            return
+
         bucket = []
         bucket_size = 0
 
@@ -576,6 +592,82 @@ class FSDP2Strategy(ABC):
 
         torch.cuda.empty_cache()
         torch_dist_barrier_and_cuda_sync()
+
+    def _update_rollout_lora(self, model, engine, gather_src):
+        """Load the current PEFT adapter through SGLang's native LoRA API."""
+        import ray
+
+        adapter_state = get_peft_model_state_dict(
+            model,
+            state_dict=model.state_dict(),
+        )
+        replicated = {}
+        for name, tensor in adapter_state.items():
+            tensor = tensor.cuda()
+            if isinstance(tensor, DTensor):
+                tensor = tensor.redistribute(
+                    placements=[
+                        torch.distributed.tensor.Replicate()
+                    ] * tensor.device_mesh.ndim,
+                    async_op=True,
+                ).to_local()
+            replicated[name] = tensor.wait() if hasattr(tensor, "wait") else tensor
+
+        if dist.get_rank() == gather_src:
+            cpu_state = {
+                name: tensor.detach().contiguous().cpu()
+                for name, tensor in replicated.items()
+            }
+            adapter_name = next(iter(model.peft_config))
+            config_dict = model.peft_config[adapter_name].to_dict()
+            target_modules = {
+                name.rsplit(".lora_", 1)[0].rsplit(".", 1)[-1]
+                for name in cpu_state
+                if ".lora_" in name
+            }
+            if not target_modules:
+                raise RuntimeError("PEFT adapter state has no LoRA target modules")
+            # PEFT permits a regex in target_modules; SGLang's tensor-loading
+            # endpoint requires the concrete module suffixes represented by
+            # the tensors being loaded.
+            config_dict["target_modules"] = sorted(target_modules)
+            for key in ("target_modules", "exclude_modules"):
+                if isinstance(config_dict.get(key), set):
+                    config_dict[key] = sorted(config_dict[key])
+            digest = hashlib.sha256()
+            for name, tensor in sorted(cpu_state.items()):
+                digest.update(name.encode())
+                digest.update(str(tensor.dtype).encode())
+                digest.update(str(tuple(tensor.shape)).encode())
+                digest.update(memoryview(tensor.view(torch.uint8).numpy()))
+            fingerprint = digest.hexdigest()
+            # Use ordinary pickle so tensor storage is embedded in the payload.
+            # ForkingPickler emits one-use shared-memory handles, but SGLang
+            # deserializes this same payload independently on every TP rank.
+            serialized = base64.b64encode(
+                pickle.dumps(cpu_state, protocol=pickle.HIGHEST_PROTOCOL)
+            ).decode()
+            result = ray.get(
+                engine.replace_lora_adapter_from_tensors.remote(
+                    lora_name="kdflow_student",
+                    serialized_tensors=serialized,
+                    config_dict=config_dict,
+                )
+            )
+            previous = getattr(self, "_rollout_lora_fingerprint", None)
+            if previous == fingerprint:
+                raise RuntimeError(
+                    "Rollout LoRA weights did not change after an optimizer update"
+                )
+            self._rollout_lora_fingerprint = fingerprint
+            sync_index = getattr(self, "_rollout_lora_sync_index", 0) + 1
+            self._rollout_lora_sync_index = sync_index
+            self.log(
+                f"Rollout LoRA sync {sync_index}: fingerprint={fingerprint[:16]} "
+                f"changed={previous is not None and previous != fingerprint} "
+                f"result={result}",
+                rank_0_only=False,
+            )
 
     def _flush_weight_bucket(
         self, bucket, engine, gather_src, gather_group,

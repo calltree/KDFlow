@@ -177,6 +177,33 @@ class RolloutRayActor:
             },
         )
 
+    def replace_lora_adapter_from_tensors(
+        self,
+        lora_name: str,
+        serialized_tensors: str,
+        config_dict: dict,
+    ):
+        """Refresh the named rollout adapter from PEFT tensors."""
+        unload = requests.post(
+            f"http://{self.server_host}:{self.server_port}/unload_lora_adapter",
+            json={"lora_name": lora_name},
+        )
+        if unload.status_code not in (200, 400):
+            unload.raise_for_status()
+        result = self._make_request(
+            "load_lora_adapter_from_tensors",
+            {
+                "lora_name": lora_name,
+                "config_dict": config_dict,
+                "serialized_tensors": serialized_tensors,
+            },
+        )
+        if not result.get("success"):
+            raise RuntimeError(
+                f"SGLang rejected LoRA adapter {lora_name}: {result}"
+            )
+        return result
+
     def update_weights_from_disk(
         self,
         model_path: str,

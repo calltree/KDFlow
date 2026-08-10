@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 
 import torch
 
+from kdflow.datasets.images import materialize_image_batch
 from kdflow.datasets.utils import get_tokenizer_or_processor
 from kdflow.utils.utils import zero_pad_sequences
 
@@ -46,6 +47,7 @@ class RolloutDataProcessor:
     ) -> tuple[List[dict], Dict[str, float]]:
         """Save, tokenize and collate raw rollout outputs."""
         self._save_rollout_data(stu_prompts, outputs, labels, global_step, mode)
+        images = materialize_image_batch(images)
 
         sample_list = [
             self._build_rollout_sample(
@@ -238,7 +240,10 @@ class RolloutDataProcessor:
                 response_text,
                 teacher_processor,
                 "tea",
-                images=images,
+                # Privileged teacher inputs are intentionally text-only. Images
+                # remain student inputs and need not be duplicated through the
+                # teacher processor or hidden-state transport.
+                images=None,
             )
         else:
             tea_tokens = {
@@ -246,6 +251,14 @@ class RolloutDataProcessor:
                 "tea_attn_mask": stu_tokens["stu_attn_mask"].clone(),
                 "tea_loss_mask": stu_tokens["stu_loss_mask"].clone(),
             }
+
+        student_targets = int(stu_tokens["stu_loss_mask"].sum())
+        teacher_targets = int(tea_tokens["tea_loss_mask"].sum())
+        if student_targets != teacher_targets:
+            raise RuntimeError(
+                "Student and teacher response masks are not aligned: "
+                f"student={student_targets}, teacher={teacher_targets}"
+            )
 
         prompt_length = stu_tokens["_stu_prompt_length"]
         response_length = len(response_ids)
@@ -277,8 +290,6 @@ class RolloutDataProcessor:
         stu_multi_modal_inputs = stu_tokens.get("_stu_multi_modal_inputs")
         if stu_multi_modal_inputs is not None:
             sample["stu_multi_modal_inputs"] = [stu_multi_modal_inputs]
-        if images:
-            sample["images"] = [images]
         if teacher_routing_key is not None:
             sample["teacher_routing_key"] = teacher_routing_key
         return sample

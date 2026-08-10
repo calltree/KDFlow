@@ -60,6 +60,11 @@ class DistillModel(nn.Module):
             attn_impl, 
             self.model_config, 
         )
+
+        if self.args.model.freeze_vision:
+            for name, parameter in self.model.named_parameters():
+                if name.startswith("visual.") or ".visual." in name:
+                    parameter.requires_grad_(False)
         
         # LoRA
         if self.args.model.lora_rank > 0:
@@ -70,6 +75,7 @@ class DistillModel(nn.Module):
                 r=self.args.model.lora_rank,
                 lora_alpha=self.args.model.lora_alpha,
                 target_modules=self.args.model.target_modules,
+                exclude_modules=self.args.model.exclude_modules,
                 lora_dropout=self.args.model.lora_dropout,
                 bias="none",
             )

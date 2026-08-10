@@ -31,6 +31,14 @@ class ModelArguments:
     target_modules: str = field(
         default="all-linear",
     )
+    exclude_modules: Optional[str] = field(
+        default=None,
+        metadata={"help": "Optional PEFT regex for modules excluded from LoRA."},
+    )
+    freeze_vision: bool = field(
+        default=False,
+        metadata={"help": "Freeze the vision encoder during student training."},
+    )
     lora_dropout: float = field(
         default=0.0,
     )

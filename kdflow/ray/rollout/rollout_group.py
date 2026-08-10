@@ -66,6 +66,7 @@ class RolloutActorGroup:
         num_gpus_per_actor: float = 0.2,
         pg: Optional[Union[PlacementGroup, Tuple[PlacementGroup, list, list]]] = None,
         extra_server_args: Optional[dict] = None,
+        lora_name: Optional[str] = None,
     ):
         self.model_path = model_path
         self.num_actors = num_actors
@@ -74,6 +75,7 @@ class RolloutActorGroup:
         self.enable_memory_saver = enable_memory_saver
         self.mem_fraction_static = mem_fraction_static
         self.extra_server_args = extra_server_args or {}
+        self.lora_name = lora_name
 
         self.num_gpus_per_actor_engine = tp_size
 
@@ -239,6 +241,8 @@ class RolloutActorGroup:
             "text": prompt,
             "sampling_params": sampling_params,
         }
+        if self.lora_name:
+            payload["lora_path"] = self.lora_name
         if image_data is not None:
             if isinstance(image_data, list):
                 payload["image_data"] = [
@@ -358,6 +362,8 @@ class RolloutActorGroup:
         """Convert a PIL Image to a base64-encoded string for SGLang API."""
         from PIL import Image
 
+        if isinstance(image, dict):
+            image = image.get("image") or image.get("url") or image.get("path")
         if isinstance(image, str):
             return image  # Already a base64 string or URL
         if isinstance(image, Image.Image):

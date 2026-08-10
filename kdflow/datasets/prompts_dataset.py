@@ -1,8 +1,6 @@
 from typing import Callable, Optional, Dict, Any, List
 
 from torch.utils.data import Dataset
-from datasets import Image as ImageFeature
-from PIL import Image
 
 from kdflow.datasets.utils import (
     convert_to_openai_messages,
@@ -100,9 +98,7 @@ class PromptDataset(Dataset):
             load_from_cache_file=False,
             desc="Processing data",
         )
-        if self.image_key:
-            self.processed_dataset = self.processed_dataset.cast_column("images", [ImageFeature()])
-
+        self._validate_thinking_prompt()
         # Filter by prompt_max_len
         original_len = len(self.processed_dataset)
         if self.prompt_max_len > 0:
@@ -121,6 +117,23 @@ class PromptDataset(Dataset):
                 )
                 
         self._print_sample()
+
+    def _validate_thinking_prompt(self) -> None:
+        if not (self.apply_chat_template and self.enable_thinking):
+            return
+        prompt = self.processed_dataset[0]["stu_prompt"]
+        assistant_marker = "<|im_start|>assistant"
+        if assistant_marker not in prompt:
+            raise RuntimeError(
+                "Thinking is enabled but the student prompt has no Qwen assistant "
+                "generation marker"
+            )
+        assistant_suffix = prompt.rsplit(assistant_marker, 1)[-1].rstrip()
+        if not assistant_suffix.endswith("<think>") or "</think>" in assistant_suffix:
+            raise RuntimeError(
+                "Thinking is enabled but the student generation prompt does not "
+                "end in an open <think> block"
+            )
 
     def _print_sample(self) -> None:
         """Print sample data for debugging."""
@@ -166,7 +179,10 @@ class PromptDataset(Dataset):
         }
         # Load images if multimodal
         if self.image_key:
-            result["images"] = self._load_images(data.get(self.image_key))
+            # Keep image references lazy. Materializing every image inside the
+            # eager dataset.map() preprocessing pass makes large VLM corpora
+            # download millions of images before the first training batch.
+            result["images"] = data.get(self.image_key) or []
             
         # load teacher routing info of each data for multi-teacher distillation
         if self.args.kd.multi_teacher_config is not None:
@@ -221,29 +237,12 @@ class PromptDataset(Dataset):
             "label": item["label"],
         }
         if "images" in item:
+            # SGLang accepts URL image references directly. Keep them lazy for
+            # rollout and materialize pixels only for student training.
             result["images"] = item["images"]
         if "teacher_routing_key" in item:
             result["teacher_routing_key"] = item["teacher_routing_key"]
         return result
-
-    @staticmethod
-    def _load_images(image_content) -> list:
-        """Load image(s) from various input formats. Always returns a list."""
-        if image_content is None:
-            return []
-        if isinstance(image_content, Image.Image):
-            return [image_content]
-        if isinstance(image_content, str):
-            return [Image.open(image_content).convert("RGB")]
-        if isinstance(image_content, list):
-            result = []
-            for img in image_content:
-                if isinstance(img, Image.Image):
-                    result.append(img)
-                elif isinstance(img, str):
-                    result.append(Image.open(img).convert("RGB"))
-            return result
-        return []
 
     @staticmethod
     def collate_fn(batch: List[Dict[str, str]]) -> List[Dict[str, str]]:

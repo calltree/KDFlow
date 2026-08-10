@@ -37,6 +37,16 @@ def train(args):
     # Create placement group for resource allocation
     num_gpus = args.train.num_nodes * args.train.num_gpus_per_node
     pg, reordered_bundle_indices, reordered_gpu_ids = create_placement_group(num_gpus)
+    rollout_lora_name = "kdflow_student" if args.model.lora_rank > 0 else None
+    rollout_server_args = None
+    if rollout_lora_name:
+        rollout_server_args = {
+            "enable_lora": True,
+            "max_lora_rank": args.model.lora_rank,
+            "lora_target_modules": ["all"],
+            "max_loras_per_batch": 1,
+            "max_loaded_loras": 1,
+        }
     rollout_group = RolloutActorGroup(
         model_path=args.model.student_name_or_path,
         num_actors=args.rollout.rollout_num_engines,
@@ -46,6 +56,8 @@ def train(args):
         mem_fraction_static=args.rollout.rollout_mem_fraction_static,
         num_gpus_per_actor=0.01,
         pg=(pg, reordered_bundle_indices, reordered_gpu_ids),
+        extra_server_args=rollout_server_args,
+        lora_name=rollout_lora_name,
     )
     if args.train.enable_sleep:
         rollout_group.sleep()
@@ -162,7 +174,6 @@ def train(args):
         tokenizer_info=tokenizer_info,
     ))
     strategy.log("Models initialized on all student actors")
-    
     generate_kwargs = {
         "max_new_tokens": args.rollout.generate_max_len,
         "temperature": args.rollout.temperature,

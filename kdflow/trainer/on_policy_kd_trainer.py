@@ -143,10 +143,16 @@ class OnPolicyKDTrainer:
         # Create Gloo IPC groups between training ranks and rollout engines (following slime)
         rollout_tp_size = getattr(self.args.rollout, "rollout_tp_size", 1)
         self.student.connect_rollout_engines(self.rollout_group.actors, rollout_tp_size)
+        if self.args.model.lora_rank > 0:
+            if self.args.train.enable_sleep:
+                self.rollout_group.wakeup(tags=["weights"])
+            self.student.update_rollout_weights()
+            if self.args.train.enable_sleep:
+                self.rollout_group.sleep(tags=["weights"])
         if self.args.model.student_name_or_path == self.args.model.teacher_name_or_path:   # for self-distillation
             num_gpus_per_teacher_actor = self.args.kd.teacher_tp_size * self.args.kd.teacher_pp_size
             self.student.connect_teacher_actors(self.teacher.teacher_engines, num_gpus_per_teacher_actor)
-        
+
         self.start_time = time.time()
         num_micro_batches = self.args.train.train_batch_size // self.args.train.micro_train_batch_size
 
