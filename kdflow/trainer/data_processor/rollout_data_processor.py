@@ -47,7 +47,8 @@ class RolloutDataProcessor:
     ) -> tuple[List[dict], Dict[str, float]]:
         """Save, tokenize and collate raw rollout outputs."""
         self._save_rollout_data(stu_prompts, outputs, labels, global_step, mode)
-        images = materialize_image_batch(images)
+        image_references = images
+        student_images = materialize_image_batch(images)
 
         sample_list = [
             self._build_rollout_sample(
@@ -55,7 +56,16 @@ class RolloutDataProcessor:
                 tea_prompt=tea_prompts[index],
                 output=output,
                 label=labels[index],
-                images=images[index] if images and images[index] else None,
+                images=(
+                    student_images[index]
+                    if student_images and student_images[index]
+                    else None
+                ),
+                image_references=(
+                    image_references[index]
+                    if image_references and image_references[index]
+                    else None
+                ),
                 teacher_routing_key=(
                     teacher_routing_keys[index]
                     if teacher_routing_keys and teacher_routing_keys[index]
@@ -219,6 +229,7 @@ class RolloutDataProcessor:
         output: Dict[str, Any],
         label: Any,
         images=None,
+        image_references=None,
         teacher_routing_key=None,
     ) -> Dict[str, Any]:
         """Build a rollout sample with student and teacher tokenizations."""
@@ -240,10 +251,7 @@ class RolloutDataProcessor:
                 response_text,
                 teacher_processor,
                 "tea",
-                # Privileged teacher inputs are intentionally text-only. Images
-                # remain student inputs and need not be duplicated through the
-                # teacher processor or hidden-state transport.
-                images=None,
+                images=images,
             )
         else:
             tea_tokens = {
@@ -264,15 +272,7 @@ class RolloutDataProcessor:
         response_length = len(response_ids)
         total_length = stu_tokens["stu_attn_mask"].sum().item()
 
-        teacher_processor = self._get_teacher_processor(teacher_routing_key)
-        tokenizer = getattr(teacher_processor, "tokenizer", teacher_processor)
-        if images:
-            feed_ids = tokenizer(
-                tea_prompt + response_text, add_special_tokens=False
-            )["input_ids"]
-            tea_feed_input_ids = feed_ids + [tokenizer.eos_token_id]
-        else:
-            tea_feed_input_ids = tea_tokens["tea_input_ids"].tolist()
+        tea_feed_input_ids = tea_tokens["tea_input_ids"].tolist()
 
         sample = {
             **{key: value for key, value in tea_tokens.items() if not key.startswith("_")},
@@ -290,6 +290,11 @@ class RolloutDataProcessor:
         stu_multi_modal_inputs = stu_tokens.get("_stu_multi_modal_inputs")
         if stu_multi_modal_inputs is not None:
             sample["stu_multi_modal_inputs"] = [stu_multi_modal_inputs]
+        if image_references is not None:
+            # Keep teacher image transport lazy. SGLang resolves the same URL
+            # references independently; full-resolution PIL objects never
+            # cross the Ray boundary.
+            sample["images"] = [image_references]
         if teacher_routing_key is not None:
             sample["teacher_routing_key"] = teacher_routing_key
         return sample

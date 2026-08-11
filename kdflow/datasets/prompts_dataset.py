@@ -237,8 +237,8 @@ class PromptDataset(Dataset):
             "label": item["label"],
         }
         if "images" in item:
-            # SGLang accepts URL image references directly. Keep them lazy for
-            # rollout and materialize pixels only for student training.
+            # Both rollout and teacher SGLang resolve URL references directly;
+            # materialize pixels only for the trainable student forward pass.
             result["images"] = item["images"]
         if "teacher_routing_key" in item:
             result["teacher_routing_key"] = item["teacher_routing_key"]
