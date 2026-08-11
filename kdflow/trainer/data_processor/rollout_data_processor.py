@@ -267,6 +267,12 @@ class RolloutDataProcessor:
                 "Student and teacher response masks are not aligned: "
                 f"student={student_targets}, teacher={teacher_targets}"
             )
+        if images and "_tea_multi_modal_inputs" not in tea_tokens:
+            raise RuntimeError(
+                "Teacher prompt did not consume the supplied multimodal inputs"
+            )
+        if images and not image_references:
+            raise RuntimeError("Teacher multimodal inputs have no SGLang image references")
 
         prompt_length = stu_tokens["_stu_prompt_length"]
         response_length = len(response_ids)
