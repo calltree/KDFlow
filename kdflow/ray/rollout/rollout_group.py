@@ -28,6 +28,10 @@ NOSET_VISIBLE_DEVICES_ENV_VARS_LIST = [
 ]
 
 SGLANG_ENV_VARS = {
+    # SGLang 0.5.12 uses REQUEST_TIMEOUT for each remote image read and
+    # defaults it to three seconds. Multi-image training rows routinely have
+    # at least one valid S3 object exceed that deadline under concurrent load.
+    "REQUEST_TIMEOUT": "60",
     "SGL_JIT_DEEPGEMM_PRECOMPILE": "false",
     "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
     "SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK": "true",
