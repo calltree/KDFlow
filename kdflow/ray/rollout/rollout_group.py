@@ -367,7 +367,9 @@ class RolloutActorGroup:
         from sglang_router.launch_router import RouterArgs, launch_router
 
         router_args = RouterArgs(host=host, port=port)
-        router_args.policy = "round_robin"
+        # Multimodal rows vary substantially in image count and output length.
+        # Route by observed worker load so long rows do not strand idle GPUs.
+        router_args.policy = "power_of_two"
         if hasattr(router_args, "log_level"):
             router_args.log_level = "warn"
 
