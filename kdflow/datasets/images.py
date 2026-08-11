@@ -1,8 +1,31 @@
 from concurrent.futures import ThreadPoolExecutor
+from time import sleep
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import torch
 from torchvision.io import ImageReadMode, decode_image, read_image
+
+
+_REMOTE_IMAGE_ATTEMPTS = 6
+
+
+def _download_image(url: str) -> bytearray:
+    request = Request(url, headers={"User-Agent": "kdflow/1.0"})
+    for attempt in range(_REMOTE_IMAGE_ATTEMPTS):
+        try:
+            with urlopen(request, timeout=60) as response:
+                return bytearray(response.read())
+        except HTTPError as error:
+            retryable = error.code == 429 or error.code >= 500
+            if not retryable or attempt == _REMOTE_IMAGE_ATTEMPTS - 1:
+                raise
+        except (URLError, TimeoutError, OSError):
+            if attempt == _REMOTE_IMAGE_ATTEMPTS - 1:
+                raise
+        sleep(2**attempt)
+
+    raise RuntimeError(f"Remote image download exhausted retries: {url}")
 
 
 def _load_image(value) -> torch.Tensor:
@@ -13,9 +36,7 @@ def _load_image(value) -> torch.Tensor:
     if not isinstance(value, str):
         raise TypeError(f"Unsupported image reference: {type(value).__name__}")
     if value.startswith(("http://", "https://")):
-        request = Request(value, headers={"User-Agent": "kdflow/1.0"})
-        with urlopen(request, timeout=60) as response:
-            encoded = torch.frombuffer(bytearray(response.read()), dtype=torch.uint8)
+        encoded = torch.frombuffer(_download_image(value), dtype=torch.uint8)
         return decode_image(
             encoded,
             mode=ImageReadMode.RGB,
