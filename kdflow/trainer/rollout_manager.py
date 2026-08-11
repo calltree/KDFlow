@@ -87,11 +87,20 @@ class RolloutManager:
             if not sampling_params:
                 raise ValueError("sampling_params must not be empty")
 
-            outputs, timing_metrics = self._generate(
+            outputs, succeeded_indices, timing_metrics = self._generate(
                 stu_prompts,
                 sampling_params,
                 image_data=images,
             )
+            stu_prompts = [stu_prompts[index] for index in succeeded_indices]
+            tea_prompts = [tea_prompts[index] for index in succeeded_indices]
+            labels = [labels[index] for index in succeeded_indices]
+            if images is not None:
+                images = [images[index] for index in succeeded_indices]
+            if teacher_routing_keys is not None:
+                teacher_routing_keys = [
+                    teacher_routing_keys[index] for index in succeeded_indices
+                ]
             micro_batches, rollout_metrics = self.data_processor.process(
                 stu_prompts=stu_prompts,
                 tea_prompts=tea_prompts,
@@ -114,10 +123,10 @@ class RolloutManager:
         prompts: List[str],
         sampling_params: Dict[str, Any],
         image_data: Optional[List] = None,
-    ) -> tuple[List[Dict[str, Any]], Dict[str, float]]:
+    ) -> tuple[List[Dict[str, Any]], List[int], Dict[str, float]]:
         """Run ordered concurrent generation requests."""
         if not prompts:
-            return [], {}
+            return [], [], {}
         if image_data is not None and len(image_data) != len(prompts):
             raise ValueError("image_data and prompts must have the same length")
 
@@ -151,13 +160,14 @@ class RolloutManager:
         sampling_params: Dict[str, Any],
         max_concurrent: int,
         image_data: Optional[List] = None,
-    ) -> tuple[List[Dict[str, Any]], Dict[str, float]]:
+    ) -> tuple[List[Dict[str, Any]], List[int], Dict[str, float]]:
         """Schedule single-sample generation requests concurrently."""
         import aiohttp
 
         semaphore = asyncio.Semaphore(max_concurrent)
         results = [None] * len(prompts)
         rollout_times = [0.0] * len(prompts)
+        failures = {}
 
         async def run_request(
             index: int, prompt: str, session: aiohttp.ClientSession
@@ -175,9 +185,7 @@ class RolloutManager:
                     )
                     rollout_times[index] = time.perf_counter() - start
             except Exception as error:
-                raise RuntimeError(
-                    f"Rollout generation failed for request {index}"
-                ) from error
+                failures[index] = repr(error)
 
         connector = aiohttp.TCPConnector(limit=max_concurrent)
         timeout = aiohttp.ClientTimeout(total=None, sock_read=None, sock_connect=60)
@@ -191,8 +199,30 @@ class RolloutManager:
                 )
             )
 
+        succeeded_indices = [
+            index for index, result in enumerate(results) if result is not None
+        ]
+        if not succeeded_indices:
+            raise RuntimeError(
+                f"All {len(prompts)} rollout requests failed: {failures}"
+            )
+        if failures:
+            logger.warning(
+                "Skipping %d/%d failed rollout samples: %s",
+                len(failures),
+                len(prompts),
+                failures,
+            )
+        successful_times = [rollout_times[index] for index in succeeded_indices]
         timing_metrics = {
-            "timing/rollout_per_sample/mean": sum(rollout_times) / len(rollout_times),
-            "timing/rollout_per_sample/max": max(rollout_times),
+            "timing/rollout_per_sample/mean": (
+                sum(successful_times) / len(successful_times)
+            ),
+            "timing/rollout_per_sample/max": max(successful_times),
+            "rollout/skipped_samples": float(len(failures)),
         }
-        return results, timing_metrics
+        return (
+            [results[index] for index in succeeded_indices],
+            succeeded_indices,
+            timing_metrics,
+        )
