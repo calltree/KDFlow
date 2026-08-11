@@ -251,12 +251,31 @@ class RolloutActorGroup:
             else:
                 payload["image_data"] = self._encode_image_to_base64(image_data)
 
-        max_retries = 2
+        max_retries = 3
         generate_url = f"{self.router_url}/generate"
         for attempt in range(max_retries + 1):
             try:
                 async with session.post(generate_url, json=payload) as response:
-                    response.raise_for_status()
+                    if response.status >= 400:
+                        body = await response.text()
+                        retryable = response.status == 429 or response.status >= 500
+                        if retryable and attempt < max_retries:
+                            logger.warning(
+                                "Retrying rollout request after HTTP %s "
+                                "(attempt=%s/%s, prompt_chars=%s): %s",
+                                response.status,
+                                attempt + 1,
+                                max_retries + 1,
+                                len(prompt),
+                                body[:500],
+                            )
+                            await asyncio.sleep(2 ** attempt)
+                            continue
+                        raise RuntimeError(
+                            f"Rollout request returned HTTP {response.status} "
+                            f"after {attempt + 1} attempts "
+                            f"(prompt_chars={len(prompt)}): {body[:1000]}"
+                        )
                     return await response.json()
             except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as error:
                 if attempt == max_retries:
