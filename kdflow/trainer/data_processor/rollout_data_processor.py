@@ -163,6 +163,7 @@ class RolloutDataProcessor:
         processor,
         prefix: str,
         images=None,
+        image_kwargs=None,
     ) -> Dict[str, Any]:
         """Tokenize prompt and response for a single sample."""
         tokenizer = getattr(processor, "tokenizer", processor)
@@ -174,6 +175,8 @@ class RolloutDataProcessor:
         full_input = {"text": prompt + response}
         if images:
             full_input["images"] = images
+        if image_kwargs:
+            full_input["images_kwargs"] = image_kwargs
         full_tokens = processor(
             **full_input, return_tensors="pt", add_special_tokens=False
         )
@@ -235,6 +238,7 @@ class RolloutDataProcessor:
         """Build a rollout sample with student and teacher tokenizations."""
         response_ids = output["output_ids"]
         response_text = output["text"]
+        image_kwargs = self._image_kwargs(image_references)
 
         stu_tokens = self._tokenize_sample(
             stu_prompt,
@@ -242,6 +246,7 @@ class RolloutDataProcessor:
             self.student_processor,
             "stu",
             images=images,
+            image_kwargs=image_kwargs,
         )
 
         if not self.is_same_tokenizer or tea_prompt != stu_prompt:
@@ -252,6 +257,7 @@ class RolloutDataProcessor:
                 teacher_processor,
                 "tea",
                 images=images,
+                image_kwargs=image_kwargs,
             )
         else:
             tea_tokens = {
@@ -304,3 +310,29 @@ class RolloutDataProcessor:
         if teacher_routing_key is not None:
             sample["teacher_routing_key"] = teacher_routing_key
         return sample
+
+    @staticmethod
+    def _image_kwargs(image_references):
+        """Preserve SGLang's per-row Qwen pixel budget in HF training."""
+        if not image_references or not all(
+            isinstance(reference, dict) for reference in image_references
+        ):
+            return None
+        minimums = {
+            reference.get("min_pixels")
+            for reference in image_references
+            if reference.get("min_pixels") is not None
+        }
+        maximums = {
+            reference.get("max_pixels")
+            for reference in image_references
+            if reference.get("max_pixels") is not None
+        }
+        if len(minimums) > 1 or len(maximums) > 1:
+            raise ValueError("One sample cannot mix Qwen image pixel budgets")
+        result = {}
+        if minimums:
+            result["min_pixels"] = minimums.pop()
+        if maximums:
+            result["max_pixels"] = maximums.pop()
+        return result or None

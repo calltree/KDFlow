@@ -1,33 +1,27 @@
 from concurrent.futures import ThreadPoolExecutor
-from io import BytesIO
-from math import sqrt
 from urllib.request import Request, urlopen
 
-from PIL import Image
+import torch
+from torchvision.io import ImageReadMode, decode_image, read_image
 
 
-def _load_image(value) -> Image.Image:
-    max_pixels = None
-    if isinstance(value, Image.Image):
-        return value.convert("RGB")
+def _load_image(value) -> torch.Tensor:
+    if isinstance(value, torch.Tensor):
+        return value
     if isinstance(value, dict):
-        max_pixels = value.get("max_pixels")
         value = value.get("image") or value.get("url") or value.get("path")
     if not isinstance(value, str):
         raise TypeError(f"Unsupported image reference: {type(value).__name__}")
     if value.startswith(("http://", "https://")):
         request = Request(value, headers={"User-Agent": "kdflow/1.0"})
         with urlopen(request, timeout=60) as response:
-            image = Image.open(BytesIO(response.read())).convert("RGB")
-    else:
-        image = Image.open(value).convert("RGB")
-    if max_pixels and image.width * image.height > max_pixels:
-        scale = sqrt(max_pixels / (image.width * image.height))
-        image = image.resize(
-            (max(1, int(image.width * scale)), max(1, int(image.height * scale))),
-            Image.Resampling.LANCZOS,
+            encoded = torch.frombuffer(bytearray(response.read()), dtype=torch.uint8)
+        return decode_image(
+            encoded,
+            mode=ImageReadMode.RGB,
+            apply_exif_orientation=True,
         )
-    return image
+    return read_image(value, mode=ImageReadMode.RGB, apply_exif_orientation=True)
 
 
 def materialize_image_batch(image_batch):
