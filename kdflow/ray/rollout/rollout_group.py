@@ -368,8 +368,12 @@ class RolloutActorGroup:
 
         router_args = RouterArgs(host=host, port=port)
         # Multimodal rows vary substantially in image count and output length.
-        # Route by observed worker load so long rows do not strand idle GPUs.
-        router_args.policy = "power_of_two"
+        # The pinned router supports cache-aware load balancing but not the
+        # newer power-of-two policy. Trigger balancing on any load difference
+        # so the common QC prefix cannot strand requests on busy workers.
+        router_args.policy = "cache_aware"
+        router_args.balance_abs_threshold = 0
+        router_args.balance_rel_threshold = 1.0
         if hasattr(router_args, "log_level"):
             router_args.log_level = "warn"
 
