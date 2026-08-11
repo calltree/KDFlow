@@ -149,7 +149,11 @@ class OnPolicyKDTrainer:
             self.student.update_rollout_weights()
             if self.args.train.enable_sleep:
                 self.rollout_group.sleep(tags=["weights"])
-        if self.args.model.student_name_or_path == self.args.model.teacher_name_or_path:   # for self-distillation
+        if (
+            self.teacher is not None
+            and self.args.model.student_name_or_path
+            == self.args.model.teacher_name_or_path
+        ):
             num_gpus_per_teacher_actor = self.args.kd.teacher_tp_size * self.args.kd.teacher_pp_size
             self.student.connect_teacher_actors(self.teacher.teacher_engines, num_gpus_per_teacher_actor)
 
@@ -182,26 +186,29 @@ class OnPolicyKDTrainer:
 
                 all_global_batches = self._prepare_global_batches(rollout_samples, num_micro_batches)
 
-                teacher_start = time.time()
-                if self.args.train.enable_sleep:
-                    self.teacher.wakeup()
+                if self.teacher is not None:
+                    teacher_start = time.time()
+                    if self.args.train.enable_sleep:
+                        self.teacher.wakeup()
 
-                teacher_batches = sum(all_global_batches, [])
-                teacher_batches = self.teacher.forward(teacher_batches)
+                    teacher_batches = sum(all_global_batches, [])
+                    teacher_batches = self.teacher.forward(teacher_batches)
 
-                batch_idx = 0
-                for i, global_batch in enumerate(all_global_batches):
-                    next_batch_idx = batch_idx + len(global_batch)
-                    all_global_batches[i] = teacher_batches[batch_idx:next_batch_idx]
-                    batch_idx = next_batch_idx
-                if batch_idx != len(teacher_batches):
-                    raise RuntimeError(
-                        f"Teacher forward returned {len(teacher_batches)} batches, expected {batch_idx}."
+                    batch_idx = 0
+                    for i, global_batch in enumerate(all_global_batches):
+                        next_batch_idx = batch_idx + len(global_batch)
+                        all_global_batches[i] = teacher_batches[batch_idx:next_batch_idx]
+                        batch_idx = next_batch_idx
+                    if batch_idx != len(teacher_batches):
+                        raise RuntimeError(
+                            f"Teacher forward returned {len(teacher_batches)} batches, expected {batch_idx}."
+                        )
+
+                    if self.args.train.enable_sleep:
+                        self.teacher.sleep()
+                    self.log_state["timing/teacher_forward"].append(
+                        time.time() - teacher_start
                     )
-
-                if self.args.train.enable_sleep:
-                    self.teacher.sleep()
-                self.log_state["timing/teacher_forward"].append(time.time() - teacher_start)
                 
                 student_start = time.time()
                 
@@ -227,7 +234,8 @@ class OnPolicyKDTrainer:
                     self.rollout_group.sleep(tags=["weights"])
                 
                 # update weights in teacher actors (only for self-distillation)
-                if self.args.model.teacher_name_or_path == self.args.model.student_name_or_path \
+                if self.teacher is not None \
+                    and self.args.model.teacher_name_or_path == self.args.model.student_name_or_path \
                     and self.global_step % self.args.kd.teacher_update_freq == 0:
                     if self.args.train.enable_sleep:
                         self.teacher.wakeup(tags=["weights"])
@@ -308,11 +316,12 @@ class OnPolicyKDTrainer:
                 dp_size=self.dp_size,
             )
 
-        if self.args.train.enable_sleep:
-            self.teacher.wakeup()
-        eval_batches = self.teacher.forward(eval_batches)
-        if self.args.train.enable_sleep:
-            self.teacher.sleep()
+        if self.teacher is not None:
+            if self.args.train.enable_sleep:
+                self.teacher.wakeup()
+            eval_batches = self.teacher.forward(eval_batches)
+            if self.args.train.enable_sleep:
+                self.teacher.sleep()
 
         if self.args.train.enable_sleep:
             self.student.wakeup()

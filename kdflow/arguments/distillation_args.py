@@ -25,6 +25,15 @@ class DistillationArguments:
         default="kl",
         metadata={"help": "Divergence selection for knowledge distillation, e.g., kl, rkl, js."}
     )
+    self_teacher: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Use the trainable policy for the stop-gradient teacher forward "
+                "instead of allocating a separate teacher service."
+            )
+        },
+    )
     teacher_forward_n_batches: int = field(
         default=1,
         metadata={"help": "Teacher forward N global batches at once for student multi-step training."}
@@ -130,5 +139,4 @@ class DistillationArguments:
             raise ValueError(f"kd_temperature must be > 0, got {self.kd_temperature}.")
         if not 0.0 < self.teacher_mem_fraction_static <= 1.0:
             raise ValueError(f"teacher_mem_fraction_static must be in (0, 1], got {self.teacher_mem_fraction_static}.")
-
 

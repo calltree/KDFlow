@@ -91,6 +91,7 @@ class StudentRayActor:
             max_steps: Maximum training steps for scheduler
         """
         self.args = strategy.args
+        self.self_teacher = self.args.kd.self_teacher
         self.max_steps = max_steps
         self.strategy = strategy
 
@@ -130,7 +131,9 @@ class StudentRayActor:
             self.student.gradient_checkpointing_enable()
             
         # load teacher lm_head for later logits calculation in the algorithm (logits = lm_head(hidden))
-        if self.args.kd.multi_teacher_config is not None:
+        if self.self_teacher:
+            self.teacher_lm_head = None
+        elif self.args.kd.multi_teacher_config is not None:
             self.teacher_lm_head = {
                 key: self.load_only_lm_head(self.args.kd.multi_teacher_config[key])
                 for key in self.args.kd.multi_teacher_config
@@ -283,19 +286,22 @@ class StudentRayActor:
                 for v in micro_batch["teacher_hiddens"]
             ]
 
-        if "stu_multi_modal_inputs" in micro_batch:
-            mm_kwargs = extract_multi_modal_inputs(micro_batch["stu_multi_modal_inputs"])
+        for prefix in ("stu", "tea"):
+            key = f"{prefix}_multi_modal_inputs"
+            if key not in micro_batch:
+                continue
+            mm_kwargs = extract_multi_modal_inputs(micro_batch[key])
             mm_kwargs = {
                 k: v.to(device, non_blocking=True) if isinstance(v, torch.Tensor) else v
                 for k, v in mm_kwargs.items()
             }
             if mm_kwargs:
-                input_ids = micro_batch["stu_input_ids"]
+                input_ids = micro_batch[f"{prefix}_input_ids"]
                 mm_token_type_ids = torch.zeros_like(input_ids)
                 mm_token_type_ids[input_ids == self.image_token_id] = 1
                 mm_token_type_ids[input_ids == self.video_token_id] = 2
                 mm_kwargs["mm_token_type_ids"] = mm_token_type_ids
-            micro_batch["stu_multi_modal_inputs"] = mm_kwargs
+            micro_batch[key] = mm_kwargs
 
         return micro_batch
 
@@ -406,7 +412,9 @@ class StudentRayActor:
     def wakeup(self):
         """Reload optimizer states from CPU to GPU."""
         self.strategy.reload_model_params(self.student)
-        if isinstance(self.teacher_lm_head, dict):
+        if self.teacher_lm_head is None:
+            pass
+        elif isinstance(self.teacher_lm_head, dict):
             self.teacher_lm_head = {k: v.cuda() for k, v in self.teacher_lm_head.items()}
         else:
             self.teacher_lm_head = self.teacher_lm_head.cuda()
@@ -415,7 +423,9 @@ class StudentRayActor:
     def sleep(self):
         """Offload optimizer states from GPU to CPU to save memory."""
         self.strategy.offload_optim_states(self.optim)
-        if isinstance(self.teacher_lm_head, dict):
+        if self.teacher_lm_head is None:
+            pass
+        elif isinstance(self.teacher_lm_head, dict):
             self.teacher_lm_head = {k: v.cpu() for k, v in self.teacher_lm_head.items()}
         else:
             self.teacher_lm_head = self.teacher_lm_head.cpu()

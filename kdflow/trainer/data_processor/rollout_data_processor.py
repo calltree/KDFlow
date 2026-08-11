@@ -265,6 +265,10 @@ class RolloutDataProcessor:
                 "tea_attn_mask": stu_tokens["stu_attn_mask"].clone(),
                 "tea_loss_mask": stu_tokens["stu_loss_mask"].clone(),
             }
+            if "_stu_multi_modal_inputs" in stu_tokens:
+                tea_tokens["_tea_multi_modal_inputs"] = stu_tokens[
+                    "_stu_multi_modal_inputs"
+                ]
 
         student_targets = int(stu_tokens["stu_loss_mask"].sum())
         teacher_targets = int(tea_tokens["tea_loss_mask"].sum())
@@ -302,7 +306,10 @@ class RolloutDataProcessor:
         stu_multi_modal_inputs = stu_tokens.get("_stu_multi_modal_inputs")
         if stu_multi_modal_inputs is not None:
             sample["stu_multi_modal_inputs"] = [stu_multi_modal_inputs]
-        if image_references is not None:
+        tea_multi_modal_inputs = tea_tokens.get("_tea_multi_modal_inputs")
+        if tea_multi_modal_inputs is not None:
+            sample["tea_multi_modal_inputs"] = [tea_multi_modal_inputs]
+        if image_references is not None and not self.args.kd.self_teacher:
             # Keep teacher image transport lazy. SGLang resolves the same URL
             # references independently; full-resolution PIL objects never
             # cross the Ray boundary.

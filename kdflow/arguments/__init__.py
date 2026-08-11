@@ -139,6 +139,18 @@ def init_args(scenario: str = "sft"):
                 "--max_len is smaller than --prompt_max_len + --generate_max_len. "
                 f"Automatically increase --max_len to {args.data.max_len}."
             )
+
+        if args.kd.self_teacher:
+            if args.kd.multi_teacher_config is not None:
+                raise ValueError("--self_teacher does not support multiple teachers")
+            if args.model.student_name_or_path != args.model.teacher_name_or_path:
+                raise ValueError(
+                    "--self_teacher requires identical student and teacher model paths"
+                )
+            if args.kd.kd_algorithm != "vanilla_kd":
+                raise ValueError("--self_teacher currently requires vanilla_kd")
+            if args.kd.use_ema_teacher:
+                raise ValueError("--self_teacher uses the current policy, not an EMA teacher")
     
     has_teacher = args.model.teacher_name_or_path is not None or args.kd.multi_teacher_config is not None
     is_kd_scenario = scenario in ("off_policy_kd", "on_policy_kd")
@@ -148,8 +160,12 @@ def init_args(scenario: str = "sft"):
                 "KD scenario requires either `--teacher_name_or_path` or `--multi_teacher_config` to be set."
             )
 
-        teacher_parallel = args.kd.teacher_tp_size * args.kd.teacher_pp_size
-        if total_gpus % teacher_parallel != 0:
+        teacher_parallel = (
+            None
+            if args.kd.self_teacher
+            else args.kd.teacher_tp_size * args.kd.teacher_pp_size
+        )
+        if teacher_parallel is not None and total_gpus % teacher_parallel != 0:
             raise ValueError(
                 f"Total GPUs ({total_gpus}) must be divisible by "
                 f"teacher_tp_size * teacher_pp_size ({args.kd.teacher_tp_size} * {args.kd.teacher_pp_size} = {teacher_parallel})."
@@ -162,8 +178,8 @@ def init_args(scenario: str = "sft"):
             )
             args.kd.teacher_ep_size = args.kd.teacher_tp_size
             
-        expected_dp = total_gpus // teacher_parallel
-        if args.kd.teacher_dp_size != expected_dp:
+        expected_dp = total_gpus // teacher_parallel if teacher_parallel else None
+        if expected_dp is not None and args.kd.teacher_dp_size != expected_dp:
             logger.warning(
                 f"Auto-adjusting teacher_dp_size from {args.kd.teacher_dp_size} to {expected_dp} "
                 f"to match total GPUs ({total_gpus}). "

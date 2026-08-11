@@ -21,6 +21,19 @@ class VanillaKD:
         if self.args.scenario == "on_policy_kd":
             self.metric_fns.append(compute_entropy)
 
+    @torch.no_grad()
+    def self_teacher_hidden(self, micro_batch):
+        """Score the sampled response with the current policy and privileged input."""
+        output = self.student(
+            micro_batch["tea_input_ids"],
+            attention_mask=micro_batch["tea_attn_mask"],
+            allgather_logits=True,
+            ring_attn_group=self.strategy.ring_attn_group,
+            **(micro_batch.get("tea_multi_modal_inputs") or {}),
+        )
+        hidden = output["hidden_states"][-1][micro_batch["tea_loss_mask"].bool()]
+        return hidden.detach()
+
     def compute_multi_teacher_logits(self, teacher_hiddens, teacher_loss_mask, routing_keys, start=None, end=None):
         per_sample_counts = teacher_loss_mask.sum(dim=1).tolist()
         if isinstance(teacher_hiddens, torch.Tensor):
@@ -68,6 +81,8 @@ class VanillaKD:
         teacher_hiddens = micro_batch.get("teacher_hiddens", None)
         avg_token_num = micro_batch["avg_micro_batch_token_num"]
 
+        if teacher_hiddens is None and self.args.kd.self_teacher:
+            teacher_hiddens = self.self_teacher_hidden(micro_batch)
         assert teacher_hiddens is not None, "micro_batch must contain `teacher_hiddens` for KD"
 
         mm_kwargs = micro_batch.get("stu_multi_modal_inputs") or {}
@@ -85,7 +100,26 @@ class VanillaKD:
         # Non-chunked case can be regarded as a special case of chunked loss (i.e., chunk_size = seq_len)
         chunk_size = self.args.train.chunked_loss_size or student_hiddens.shape[0]
 
-        if isinstance(self.teacher_lm_head, dict):  # multi-teacher distillation
+        if self.args.kd.self_teacher:
+            teacher_hiddens = teacher_hiddens.to(student_hiddens)
+
+            def teacher_logits(start, end):
+                with torch.no_grad():
+                    return self.student.model.lm_head(
+                        teacher_hiddens[start:end], skip=False
+                    )
+
+            kd_loss, metric_sums = chunked_loss(
+                student_hiddens,
+                self.student.model.lm_head,
+                self.loss_fn,
+                teacher_logits_fn=teacher_logits,
+                chunk_size=chunk_size,
+                reduction="sum",
+                metric_fns=self.metric_fns,
+                return_metrics=True,
+            )
+        elif isinstance(self.teacher_lm_head, dict):  # multi-teacher distillation
             teacher_logits_fn = lambda start, end: self.compute_multi_teacher_logits(
                 teacher_hiddens, teacher_loss_mask, micro_batch["teacher_routing_key"], start, end
             )

@@ -63,13 +63,15 @@ def train(args):
         rollout_group.sleep()
     
     TeacherGroupCLS = MultiTeacherActorGroup if args.kd.multi_teacher_config else TeacherActorGroup
-    teacher_model = TeacherGroupCLS(
-        strategy,
-        num_gpus,
-        num_gpus_per_node=args.train.num_gpus_per_node,
-        num_gpus_per_actor=0.01,
-        pg=(pg, reordered_bundle_indices, reordered_gpu_ids),
-    )
+    teacher_model = None
+    if not args.kd.self_teacher:
+        teacher_model = TeacherGroupCLS(
+            strategy,
+            num_gpus,
+            num_gpus_per_node=args.train.num_gpus_per_node,
+            num_gpus_per_actor=0.01,
+            pg=(pg, reordered_bundle_indices, reordered_gpu_ids),
+        )
     student_model = StudentActorGroup(
         args,
         args.train.num_nodes,
@@ -199,7 +201,8 @@ def train(args):
         ray.get(student_model.async_save_model())
         strategy.log("Training completed and model saved.")
     finally:
-        teacher_model.shutdown()
+        if teacher_model is not None:
+            teacher_model.shutdown()
         rollout_group.shutdown()
 
 
