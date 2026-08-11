@@ -19,6 +19,30 @@ from kdflow.utils.logging_utils import init_logger
 logger = init_logger(__name__)
 
 
+def _launch_rgb_safe_sglang_server(server_args: ServerArgs) -> None:
+    """Launch SGLang with GPU-decoded grayscale images normalized to RGB."""
+    import torch
+    from sglang.srt.entrypoints.http_server import launch_server
+    from sglang.srt.utils import common as sglang_common
+
+    original_load_image = sglang_common._load_image
+
+    def load_rgb_image(*args, **kwargs):
+        image = original_load_image(*args, **kwargs)
+        if not isinstance(image, torch.Tensor):
+            return image
+        if image.ndim == 2:
+            image = image.unsqueeze(0)
+        if image.shape[-3] == 1:
+            return image.expand(3, -1, -1).contiguous()
+        if image.shape[-3] == 4:
+            return image[:3].contiguous()
+        return image
+
+    sglang_common._load_image = load_rgb_image
+    launch_server(server_args)
+
+
 @ray.remote
 class RolloutRayActor:
     """Ray remote actor wrapping a single SGLang HTTP server."""
@@ -317,11 +341,12 @@ class RolloutRayActor:
     @staticmethod
     def _launch_sglang_server(server_args: ServerArgs) -> Optional[multiprocessing.Process]:
         """Launch SGLang HTTP server in a subprocess."""
-        from sglang.srt.entrypoints.http_server import launch_server
-
         multiprocessing.set_start_method("spawn", force=True)
         server_args.host = server_args.host.strip("[]")
-        p = multiprocessing.Process(target=launch_server, args=(server_args,))
+        p = multiprocessing.Process(
+            target=_launch_rgb_safe_sglang_server,
+            args=(server_args,),
+        )
         p.start()
 
         if server_args.node_rank != 0:

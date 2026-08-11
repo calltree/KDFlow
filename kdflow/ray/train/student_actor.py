@@ -326,6 +326,11 @@ class StudentRayActor:
             micro_batch = self._prepare_micro_batch(batch)
 
             loss_info = self.kd_algorithm.training_step(micro_batch)
+            train_weight = micro_batch.get("_train_weight", 1.0)
+            loss_info = {
+                key: value * train_weight
+                for key, value in loss_info.items()
+            }
             for key in loss_info:
                 status[key].append(loss_info[key].item())
             

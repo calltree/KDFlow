@@ -140,6 +140,21 @@ class StudentActorGroup:
         Returns:
             List[ray.ObjectRef]: List of remote object references to the results
         """
+        data = list(data)
+        effective_actors = len(self._actor_handlers) // self.duplicate_actors
+        padding_size = (-len(data)) % effective_actors
+        if padding_size:
+            # FSDP ranks must execute the same number of optimizer microsteps.
+            # A rollout failure can leave a partial global batch; preserve every
+            # successful row and pad the distributed shape with zero-weight work.
+            source = min(
+                data,
+                key=lambda sample: sample["stu_input_ids"].shape[-1],
+            )
+            data.extend(
+                {**source, "_train_weight": 0.0}
+                for _ in range(padding_size)
+            )
         return self._run_all_actors(data, "fit")
 
     def async_run_eval(self, data):
@@ -158,6 +173,11 @@ class StudentActorGroup:
         total_length = len(data)
         num_actors = len(self._actor_handlers)
         effective_actors = num_actors // self.duplicate_actors
+        if total_length % effective_actors:
+            raise ValueError(
+                f"{actor_method} received {total_length} rows for "
+                f"{effective_actors} actors"
+            )
         chunk_size = total_length // effective_actors
         refs = []
         for chunk_idx in range(effective_actors):
