@@ -277,7 +277,15 @@ class RolloutActorGroup:
                             f"(prompt_chars={len(prompt)}): {body[:1000]}"
                         )
                     return await response.json()
-            except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as error:
+            except asyncio.TimeoutError as error:
+                # Retrying a ten-minute timeout can hold an entire update for
+                # another ten minutes per attempt.  Let the rollout manager
+                # skip this sample while preserving every completed peer.
+                raise RuntimeError(
+                    f"Rollout request timed out "
+                    f"(prompt_chars={len(prompt)}, sampling_params={sampling_params})"
+                ) from error
+            except aiohttp.ClientConnectionError as error:
                 if attempt == max_retries:
                     raise RuntimeError(
                         f"Rollout request failed after {max_retries + 1} attempts "

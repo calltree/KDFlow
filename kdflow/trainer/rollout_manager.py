@@ -188,7 +188,11 @@ class RolloutManager:
                 failures[index] = repr(error)
 
         connector = aiohttp.TCPConnector(limit=max_concurrent)
-        timeout = aiohttp.ClientTimeout(total=None, sock_read=None, sock_connect=60)
+        # A router/worker can lose a response after generation without closing
+        # the socket.  Bound the full request so one orphaned sample cannot
+        # stall an otherwise successful rollout forever.  The deadline is
+        # deliberately longer than a capped 4K-token multimodal generation.
+        timeout = aiohttp.ClientTimeout(total=600, sock_read=600, sock_connect=60)
         async with aiohttp.ClientSession(
             connector=connector, timeout=timeout
         ) as session:
