@@ -308,6 +308,16 @@ class OnPolicyKDTrainer:
         predictions = sum((micro_batch["stu_responses"] for micro_batch in rollout_samples), [])
         labels = sum((micro_batch["labels"] for micro_batch in rollout_samples), [])
 
+        metrics = rollout_metrics
+        if self.custom_eval_fn is not None:
+            custom_metrics = self.custom_eval_fn(predictions, labels)
+            if not isinstance(custom_metrics, dict):
+                raise TypeError("custom_eval_fn must return a dict")
+            metrics.update(normalize_eval_metrics(custom_metrics))
+            return log_eval_metrics(
+                self.strategy, self._wandb, metrics, self.global_step
+            )
+
         eval_batches = rollout_samples
         if self.args.train.use_dynamic_bsz:
             eval_batches = rearrange_global_batch(
@@ -329,12 +339,6 @@ class OnPolicyKDTrainer:
         if self.args.train.enable_sleep:
             self.student.sleep()
         metrics.update(rollout_metrics)
-
-        if self.custom_eval_fn is not None:
-            custom_metrics = self.custom_eval_fn(predictions, labels)
-            if not isinstance(custom_metrics, dict):
-                raise TypeError("custom_eval_fn must return a dict")
-            metrics.update(normalize_eval_metrics(custom_metrics))
 
         return log_eval_metrics(self.strategy, self._wandb, metrics, self.global_step)
             

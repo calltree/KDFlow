@@ -30,7 +30,9 @@ class DataArguments:
         default=None,
         metadata={
             "help": "Optional Python file defining eval_fn(predictions, labels), "
-                    "which must return a metric dict (only supported in on-policy KD)."
+                    "which must return a metric dict. Custom evaluation scores "
+                    "rollout generations instead of running KD loss over the eval set "
+                    "(only supported in on-policy KD)."
         }
     )
     input_key: str = field(
